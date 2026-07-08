@@ -1,0 +1,16 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+data/*.xlsx
+.env
+.env.*
+.streamlit/secrets.toml
+
+# Python bytecode and caches
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
