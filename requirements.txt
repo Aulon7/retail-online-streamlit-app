@@ -1,7 +1,9 @@
 streamlit
 pandas
+pyarrow
 numpy
 matplotlib
 seaborn
 python-calamine
 pandera
+plotly
