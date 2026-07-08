@@ -1,47 +1,129 @@
 import streamlit as st
-from src.data_loader import load_sales, filter_period, filter_country
-from src.charts import top_products_chart, revenue_country_chart
-from src.analysis import top_products, revenue_by_country
+import pandas as pd
+import plotly.express as px
 
+# Import ONLY the core data loading function from P2's backend
+try:
+    from src.data_loader import load_sales
+except ImportError:
+    # Direct fallback if data loader is missing
+    def load_sales():
+        return pd.read_parquet("data/retail_clean.parquet")
+
+# ------------------------------------------------------------
+# LOCAL METRICS & FILTERING FUNCTIONS
+# ------------------------------------------------------------
+def normalize_columns_local(df):
+    rename_map = {
+        "Customer ID": "CustomerID",
+        "Customer_ID": "CustomerID",
+        "customer_id": "CustomerID",
+        "CustomerNo": "CustomerID",
+        "Customer No": "CustomerID",
+        "Invoice No": "InvoiceNo",
+        "Invoice_No": "InvoiceNo",
+        "invoice_no": "InvoiceNo",
+        "InvoiceNumber": "InvoiceNo",
+        "Invoice Number": "InvoiceNo",
+        "Invoice": "InvoiceNo",
+        "invoice": "InvoiceNo",
+        "Unit Price": "UnitPrice",
+        "Unit_Price": "UnitPrice",
+        "unit_price": "UnitPrice",
+        "Price": "UnitPrice",
+        "price": "UnitPrice",
+        "Rate": "UnitPrice",
+        "Invoice Date": "InvoiceDate",
+        "Invoice_Date": "InvoiceDate",
+        "invoice_date": "InvoiceDate",
+        "Date": "InvoiceDate",
+        "date": "InvoiceDate",
+    }
+    return df.rename(columns=rename_map)
+
+def filter_country_local(df, country):
+    if "Country" in df.columns and country != "All Countries":
+        return df[df["Country"] == country]
+    return df
+
+# ------------------------------------------------------------
+# STREAMLIT PAGE SETUP
+# ------------------------------------------------------------
 st.title("💰 Revenue Drivers")
 st.markdown("Discover which products generate the most demand and which international markets drive growth.")
 
-# Load sales dataset
 try:
-    df_sales = load_sales()
+    df_raw = load_sales()
+    df_sales = normalize_columns_local(df_raw)
+    if "Revenue" not in df_sales.columns and "Quantity" in df_sales.columns and "UnitPrice" in df_sales.columns:
+        df_sales["Revenue"] = df_sales["Quantity"] * df_sales["UnitPrice"]
 except Exception as e:
-    st.error(f"Error: {e}")
+    st.error(f"Error loading files: {e}")
     st.stop()
 
-# Filter Controls (Sidebar is shared)
+# Filter Control (Sidebar is shared)
 st.sidebar.header("Global Filters")
-unique_countries = sorted(df_sales["Country"].dropna().unique().tolist())
+unique_countries = sorted(df_sales["Country"].dropna().unique().tolist()) if "Country" in df_sales.columns else []
 selected_country = st.sidebar.selectbox("Select Country", ["All Countries"] + unique_countries, key="p4_country")
 
-df_filtered = filter_country(df_sales, selected_country)
+df_filtered = filter_country_local(df_sales, selected_country)
+
+# Local Calculations for Products & Countries
+df_top_products = pd.DataFrame(columns=["Description", "Revenue"])
+if "Description" in df_filtered.columns and "Revenue" in df_filtered.columns:
+    df_top_products = df_filtered.groupby("Description")["Revenue"].sum().reset_index()
+    df_top_products = df_top_products.sort_values("Revenue", ascending=False).head(10)
+
+df_country_sales = pd.DataFrame(columns=["Country", "Revenue"])
+if "Country" in df_filtered.columns and "Revenue" in df_filtered.columns:
+    df_country_sales = df_filtered.groupby("Country")["Revenue"].sum().reset_index()
+    df_country_sales = df_country_sales.sort_values("Revenue", ascending=False)
 
 # Visualizations in two columns
 col1, col2 = st.columns(2)
 
 with col1:
-    fig_prod = top_products_chart(df_filtered)
-    st.plotly_chart(fig_prod, use_container_width=True)
+    if not df_top_products.empty:
+        fig_prod = px.bar(
+            df_top_products.sort_values("Revenue", ascending=True),
+            x="Revenue",
+            y="Description",
+            orientation="h",
+            title="Top 10 Products by Revenue"
+        )
+        fig_prod.update_traces(marker_color="#29B5E8")
+        fig_prod.update_layout(template="plotly_white", margin=dict(l=10, r=10, t=40, b=10))
+        st.plotly_chart(fig_prod, use_container_width=True)
+    else:
+        st.warning("No product data available.")
 
 with col2:
-    fig_country = revenue_country_chart(df_filtered)
-    st.plotly_chart(fig_country, use_container_width=True)
+    # Exclude United Kingdom for international markets display scale
+    df_international = df_country_sales[df_country_sales["Country"] != "United Kingdom"].head(10) if not df_country_sales.empty else pd.DataFrame()
+    if not df_international.empty:
+        fig_country = px.bar(
+            df_international,
+            x="Country",
+            y="Revenue",
+            title="Top 10 International Markets (Excl. UK)"
+        )
+        fig_country.update_traces(marker_color="#2B4C7E")
+        fig_country.update_layout(template="plotly_white", margin=dict(l=10, r=10, t=40, b=10))
+        st.plotly_chart(fig_country, use_container_width=True)
+    else:
+        st.warning("No international sales data available.")
 
 st.markdown("---")
 
 # Recommendations Insight Box
 st.subheader("💡 Market Expansion Recommendations")
-top_countries_list = revenue_by_country(df_filtered)[revenue_by_country(df_filtered)["Country"] != "United Kingdom"].head(3)
-
-if not top_countries_list.empty:
-    top_1 = top_countries_list.iloc[0]["Country"]
-    st.success(
-        f"🎯 **Key Recommendation:** Aside from the domestic UK market, **{top_1}** is your primary international driver. "
-        f"Consider localizing payment processing, targeted ad campaigns, or shipping promotions specifically in this territory to increase conversions."
-    )
-else:
-    st.info("Domestic market dominates. Expansion analysis will populate once international sales records are logged.")
+if not df_country_sales.empty:
+    top_countries_list = df_country_sales[df_country_sales["Country"] != "United Kingdom"].head(3)
+    if not top_countries_list.empty:
+        top_1 = top_countries_list.iloc[0]["Country"]
+        st.success(
+            f"🎯 **Key Recommendation:** Aside from the domestic UK market, **{top_1}** is your primary international driver. "
+            f"Consider localizing payment processing, targeted ad campaigns, or shipping promotions specifically in this territory to increase conversions."
+        )
+    else:
+        st.info("Domestic market dominates. Expansion analysis will populate once international sales records are logged.")

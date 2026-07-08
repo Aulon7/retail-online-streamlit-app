@@ -1,31 +1,99 @@
 import streamlit as st
-from src.data_loader import load_sales, load_returns, filter_country
-from src.charts import returns_chart, customer_chart
-from src.analysis import return_rate, revenue_concentration
+import pandas as pd
+import plotly.express as px
 
+# Import ONLY the data loading functions from P2's backend
+try:
+    from src.data_loader import load_sales, load_returns
+except ImportError:
+    def load_sales():
+        return pd.read_parquet("data/retail_clean.parquet")
+    def load_returns():
+        return pd.read_parquet("data/retail_cancellations.parquet")
+
+# ------------------------------------------------------------
+# LOCAL METRICS & FILTERING FUNCTIONS
+# ------------------------------------------------------------
+def normalize_columns_local(df):
+    rename_map = {
+        "Customer ID": "CustomerID",
+        "Customer_ID": "CustomerID",
+        "customer_id": "CustomerID",
+        "CustomerNo": "CustomerID",
+        "Customer No": "CustomerID",
+        "Invoice No": "InvoiceNo",
+        "Invoice_No": "InvoiceNo",
+        "invoice_no": "InvoiceNo",
+        "InvoiceNumber": "InvoiceNo",
+        "Invoice Number": "InvoiceNo",
+        "Invoice": "InvoiceNo",
+        "invoice": "InvoiceNo",
+        "Unit Price": "UnitPrice",
+        "Unit_Price": "UnitPrice",
+        "unit_price": "UnitPrice",
+        "Price": "UnitPrice",
+        "price": "UnitPrice",
+        "Rate": "UnitPrice",
+        "Invoice Date": "InvoiceDate",
+        "Invoice_Date": "InvoiceDate",
+        "invoice_date": "InvoiceDate",
+        "Date": "InvoiceDate",
+        "date": "InvoiceDate",
+    }
+    return df.rename(columns=rename_map)
+
+def filter_country_local(df, country):
+    if df.empty:
+        return df
+    if "Country" in df.columns and country != "All Countries":
+        return df[df["Country"] == country]
+    return df
+
+# ------------------------------------------------------------
+# STREAMLIT PAGE SETUP
+# ------------------------------------------------------------
 st.title("⚠️ Risk & Customer Value")
 st.markdown("Understand high-risk elements of the business, return statistics, and customer reliance/loyalty indexes.")
 
-# Load sales & cancellation datasets
 try:
-    df_sales = load_sales()
-    df_returns = load_returns()
+    df_sales_raw = load_sales()
+    df_sales = normalize_columns_local(df_sales_raw)
+    if "Revenue" not in df_sales.columns and "Quantity" in df_sales.columns and "UnitPrice" in df_sales.columns:
+        df_sales["Revenue"] = df_sales["Quantity"] * df_sales["UnitPrice"]
+
+    df_returns_raw = load_returns()
+    df_returns = normalize_columns_local(df_returns_raw) if not df_returns_raw.empty else df_returns_raw
+    if not df_returns.empty and "Revenue" not in df_returns.columns and "Quantity" in df_returns.columns and "UnitPrice" in df_returns.columns:
+        df_returns["Revenue"] = df_returns["Quantity"] * df_returns["UnitPrice"]
 except Exception as e:
     st.error(f"Error loading files: {e}")
     st.stop()
 
 # Sidebar filter
 st.sidebar.header("Global Filters")
-unique_countries = sorted(df_sales["Country"].dropna().unique().tolist())
+unique_countries = sorted(df_sales["Country"].dropna().unique().tolist()) if "Country" in df_sales.columns else []
 selected_country = st.sidebar.selectbox("Select Country", ["All Countries"] + unique_countries, key="p5_country")
 
-df_sales_filt = filter_country(df_sales, selected_country)
-df_returns_filt = filter_country(df_returns, selected_country) if not df_returns.empty else df_returns
+df_sales_filt = filter_country_local(df_sales, selected_country)
+df_returns_filt = filter_country_local(df_returns, selected_country)
 
-# Row 1: KPI Statistics
-r_rate = return_rate(df_sales_filt, df_returns_filt)
-concentration_pct = revenue_concentration(df_sales_filt)
+# Return Rate Math
+sales_val = df_sales_filt["Revenue"].sum() if "Revenue" in df_sales_filt.columns else 0.0
+returns_val = abs(df_returns_filt["Revenue"].sum()) if not df_returns_filt.empty and "Revenue" in df_returns_filt.columns else 0.0
+r_rate = (returns_val / sales_val) * 100 if sales_val > 0 else 0.0
 
+# Customer Concentration Math
+concentration_pct = 0.0
+if "CustomerID" in df_sales_filt.columns and "Revenue" in df_sales_filt.columns:
+    df_cust_clean = df_sales_filt.dropna(subset=["CustomerID"])
+    cust_sales = df_cust_clean.groupby("CustomerID")["Revenue"].sum().sort_values(ascending=False)
+    if len(cust_sales) > 0:
+        top_10_percent_count = max(1, int(len(cust_sales) * 0.1))
+        top_10_revenue = cust_sales.head(top_10_percent_count).sum()
+        total_rev = cust_sales.sum()
+        concentration_pct = (top_10_revenue / total_rev) * 100 if total_rev > 0 else 0.0
+
+# KPI Cards Row
 col1, col2 = st.columns(2)
 with col1:
     st.metric(
@@ -42,20 +110,54 @@ with col2:
 
 st.markdown("---")
 
-# Row 2: Visualizations
+# Visualizations Row
 col_left, col_right = st.columns(2)
 
 with col_left:
-    fig_returns = returns_chart(df_returns_filt)
-    st.plotly_chart(fig_returns, use_container_width=True)
+    df_returned_grouped = pd.DataFrame()
+    if not df_returns_filt.empty and "Description" in df_returns_filt.columns and "Quantity" in df_returns_filt.columns:
+        df_returned_grouped = df_returns_filt.groupby("Description")["Quantity"].sum().reset_index()
+        df_returned_grouped["Quantity"] = df_returned_grouped["Quantity"].abs()
+        df_returned_grouped = df_returned_grouped.sort_values("Quantity", ascending=False).head(10)
+
+    if not df_returned_grouped.empty:
+        fig_returns = px.bar(
+            df_returned_grouped,
+            x="Description",
+            y="Quantity",
+            title="Top 10 Returned Products by Volume"
+        )
+        fig_returns.update_traces(marker_color="#E05A47")
+        fig_returns.update_layout(template="plotly_white", margin=dict(l=10, r=10, t=40, b=10))
+        st.plotly_chart(fig_returns, use_container_width=True)
+    else:
+        st.warning("No returns data available.")
 
 with col_right:
-    fig_cust = customer_chart(df_sales_filt)
-    st.plotly_chart(fig_cust, use_container_width=True)
+    df_cust_spend = pd.DataFrame()
+    if "CustomerID" in df_sales_filt.columns and "Revenue" in df_sales_filt.columns:
+        df_cust_clean = df_sales_filt.dropna(subset=["CustomerID"])
+        df_cust_spend = df_cust_clean.groupby("CustomerID")["Revenue"].sum().reset_index()
+        df_cust_spend["CustomerID"] = df_cust_spend["CustomerID"].astype(float).astype(int).astype(str)
+        df_cust_spend = df_cust_spend.sort_values("Revenue", ascending=False).head(10)
+
+    if not df_cust_spend.empty:
+        fig_cust = px.bar(
+            df_cust_spend.sort_values("Revenue", ascending=True),
+            x="Revenue",
+            y="CustomerID",
+            orientation="h",
+            title="Top 10 Customers by Spend"
+        )
+        fig_cust.update_traces(marker_color="#5D6D7E")
+        fig_cust.update_layout(template="plotly_white", margin=dict(l=10, r=10, t=40, b=10))
+        st.plotly_chart(fig_cust, use_container_width=True)
+    else:
+        st.warning("No customer data available.")
 
 st.markdown("---")
 
-# Insights Box
+# Strategy Recommendations Insight Box
 st.subheader("💡 Risk Mitigation Strategy")
 if concentration_pct > 50:
     st.warning(
