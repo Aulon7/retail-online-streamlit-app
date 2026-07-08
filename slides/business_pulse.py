@@ -2,18 +2,13 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-# Import ONLY the core data loading function from P2's backend
 try:
     from src.data_loader import load_sales
 except ImportError:
-    # Direct fallback if data loader is completely missing
     def load_sales():
         return pd.read_parquet("data/retail_clean.parquet")
 
-# ------------------------------------------------------------
-# LOCAL METRICS & FILTERING FUNCTIONS 
-# (Kept here to ensure page works independently of P2's backend files)
-# ------------------------------------------------------------
+
 def normalize_columns_local(df):
     rename_map = {
         "Customer ID": "CustomerID",
@@ -42,6 +37,7 @@ def normalize_columns_local(df):
     }
     return df.rename(columns=rename_map)
 
+
 def filter_period_local(df, start_date, end_date):
     if "InvoiceDate" in df.columns:
         start = pd.to_datetime(start_date)
@@ -49,133 +45,125 @@ def filter_period_local(df, start_date, end_date):
         return df[(df["InvoiceDate"].dt.date >= start.date()) & (df["InvoiceDate"].dt.date <= end.date())]
     return df
 
+
 def filter_country_local(df, country):
     if "Country" in df.columns and country != "All Countries":
         return df[df["Country"] == country]
     return df
 
-# ------------------------------------------------------------
-# STREAMLIT PAGE SETUP
-# ------------------------------------------------------------
-st.title("📈 Business Pulse Dashboard")
-st.markdown("Track overall sales performance, monthly trends, and high-level health indicators using real dataset analysis.")
 
-# 1. Load and Clean Dataset
-try:
-    df_raw = load_sales()
-    df_sales = normalize_columns_local(df_raw)
-    
+def render():
+    st.title("📈 Business Pulse Dashboard")
+    st.markdown("Track overall sales performance, monthly trends, and high-level health indicators using real dataset analysis.")
+
+    try:
+        df_raw = load_sales()
+        df_sales = normalize_columns_local(df_raw)
+
+        if "InvoiceDate" in df_sales.columns:
+            df_sales["InvoiceDate"] = pd.to_datetime(df_sales["InvoiceDate"])
+
+        if "Revenue" not in df_sales.columns and "Quantity" in df_sales.columns and "UnitPrice" in df_sales.columns:
+            df_sales["Revenue"] = df_sales["Quantity"] * df_sales["UnitPrice"]
+    except Exception as e:
+        st.error(f"Error loading or preparing the dataset: {e}")
+        st.stop()
+
+    st.sidebar.header("Global Filters")
+    unique_countries = sorted(df_sales["Country"].dropna().unique().tolist()) if "Country" in df_sales.columns else []
+    selected_country = st.sidebar.selectbox("Select Country", ["All Countries"] + unique_countries)
+
     if "InvoiceDate" in df_sales.columns:
-        df_sales["InvoiceDate"] = pd.to_datetime(df_sales["InvoiceDate"])
-        
-    if "Revenue" not in df_sales.columns and "Quantity" in df_sales.columns and "UnitPrice" in df_sales.columns:
-        df_sales["Revenue"] = df_sales["Quantity"] * df_sales["UnitPrice"]
-except Exception as e:
-    st.error(f"Error loading or preparing the dataset: {e}")
-    st.stop()
+        min_date = df_sales["InvoiceDate"].min().date()
+        max_date = df_sales["InvoiceDate"].max().date()
 
-# 2. Sidebar Filters
-st.sidebar.header("Global Filters")
-unique_countries = sorted(df_sales["Country"].dropna().unique().tolist()) if "Country" in df_sales.columns else []
-selected_country = st.sidebar.selectbox("Select Country", ["All Countries"] + unique_countries)
+        selected_dates = st.sidebar.date_input(
+            "Select Date Range",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+        )
+    else:
+        selected_dates = None
 
-if "InvoiceDate" in df_sales.columns:
-    min_date = df_sales["InvoiceDate"].min().date()
-    max_date = df_sales["InvoiceDate"].max().date()
+    df_filtered = df_sales.copy()
+    df_filtered = filter_country_local(df_filtered, selected_country)
 
-    selected_dates = st.sidebar.date_input(
-        "Select Date Range",
-        value=(min_date, max_date),
-        min_value=min_date,
-        max_value=max_date
-    )
-else:
-    selected_dates = None
+    if selected_dates and len(selected_dates) == 2:
+        start_date, end_date = selected_dates
+        df_filtered = filter_period_local(df_filtered, start_date, end_date)
 
-# Apply local filters
-df_filtered = df_sales.copy()
-df_filtered = filter_country_local(df_filtered, selected_country)
+    if df_filtered.empty:
+        st.warning("No transactions found for the selected filter criteria.")
+        st.stop()
 
-if selected_dates and len(selected_dates) == 2:
-    start_date, end_date = selected_dates
-    df_filtered = filter_period_local(df_filtered, start_date, end_date)
+    rev = float(df_filtered["Revenue"].sum()) if "Revenue" in df_filtered.columns else 0.0
+    orders = int(df_filtered["InvoiceNo"].nunique()) if "InvoiceNo" in df_filtered.columns else 0
+    aov = float(rev / orders) if orders > 0 else 0.0
+    customers = int(df_filtered["CustomerID"].dropna().nunique()) if "CustomerID" in df_filtered.columns else 0
 
-if df_filtered.empty:
-    st.warning("No transactions found for the selected filter criteria.")
-    st.stop()
+    df_monthly = pd.DataFrame(columns=["YearMonth", "Revenue"])
+    if "InvoiceDate" in df_filtered.columns and "Revenue" in df_filtered.columns:
+        df_temp = df_filtered.copy()
+        df_temp["YearMonth"] = df_temp["InvoiceDate"].dt.to_period("M").astype(str)
+        df_monthly = df_temp.groupby("YearMonth")["Revenue"].sum().reset_index().sort_values("YearMonth")
 
-# 3. Calculate metrics locally
-rev = float(df_filtered["Revenue"].sum()) if "Revenue" in df_filtered.columns else 0.0
-orders = int(df_filtered["InvoiceNo"].nunique()) if "InvoiceNo" in df_filtered.columns else 0
-aov = float(rev / orders) if orders > 0 else 0.0
-customers = int(df_filtered["CustomerID"].dropna().nunique()) if "CustomerID" in df_filtered.columns else 0
+    growth_pct = 0.0
+    if len(df_monthly) >= 2:
+        latest_month_rev = df_monthly.iloc[-1]["Revenue"]
+        prev_month_rev = df_monthly.iloc[-2]["Revenue"]
+        if prev_month_rev > 0:
+            growth_pct = ((latest_month_rev - prev_month_rev) / prev_month_rev) * 100
 
-# Calculate monthly trend
-df_monthly = pd.DataFrame(columns=["YearMonth", "Revenue"])
-if "InvoiceDate" in df_filtered.columns and "Revenue" in df_filtered.columns:
-    df_temp = df_filtered.copy()
-    df_temp["YearMonth"] = df_temp["InvoiceDate"].dt.to_period("M").astype(str)
-    df_monthly = df_temp.groupby("YearMonth")["Revenue"].sum().reset_index().sort_values("YearMonth")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric(
+            label="Total Revenue",
+            value=f"${rev:,.2f}",
+            delta=f"{growth_pct:.1f}% vs Last Month" if len(df_monthly) >= 2 else None,
+        )
+    with col2:
+        st.metric(label="Total Orders", value=f"{orders:,}")
+    with col3:
+        st.metric(label="Average Order Value (AOV)", value=f"${aov:,.2f}")
+    with col4:
+        st.metric(label="Active Customers", value=f"{customers:,}")
 
-growth_pct = 0.0
-if len(df_monthly) >= 2:
-    latest_month_rev = df_monthly.iloc[-1]["Revenue"]
-    prev_month_rev = df_monthly.iloc[-2]["Revenue"]
-    if prev_month_rev > 0:
-        growth_pct = ((latest_month_rev - prev_month_rev) / prev_month_rev) * 100
+    st.markdown("---")
 
-# 4. KPI Layout
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    st.metric(
-        label="Total Revenue", 
-        value=f"${rev:,.2f}",
-        delta=f"{growth_pct:.1f}% vs Last Month" if len(df_monthly) >= 2 else None
-    )
-with col2:
-    st.metric(label="Total Orders", value=f"{orders:,}")
-with col3:
-    st.metric(label="Average Order Value (AOV)", value=f"${aov:,.2f}")
-with col4:
-    st.metric(label="Active Customers", value=f"{customers:,}")
+    st.subheader("Monthly Revenue Trend")
+    if not df_monthly.empty:
+        fig = px.line(
+            df_monthly,
+            x="YearMonth",
+            y="Revenue",
+            title=f"Monthly Sales Performance ({selected_country})",
+            labels={"YearMonth": "Month", "Revenue": "Revenue ($)"},
+            markers=True,
+        )
+        fig.update_traces(line_color="#29B5E8", line_width=3)
+        fig.update_layout(
+            hovermode="x unified",
+            template="plotly_white",
+            margin=dict(l=10, r=10, t=10, b=10),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("Trend visualization unavailable due to missing dates in the data selection.")
 
-st.markdown("---")
+    st.markdown("---")
 
-# 5. Monthly Trend Chart
-st.subheader("Monthly Revenue Trend")
-if not df_monthly.empty:
-    fig = px.line(
-        df_monthly,
-        x="YearMonth",
-        y="Revenue",
-        title=f"Monthly Sales Performance ({selected_country})",
-        labels={"YearMonth": "Month", "Revenue": "Revenue ($)"},
-        markers=True
-    )
-    fig.update_traces(line_color="#29B5E8", line_width=3)
-    fig.update_layout(
-        hovermode="x unified",
-        template="plotly_white",
-        margin=dict(l=10, r=10, t=10, b=10)
-    )
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.warning("Trend visualization unavailable due to missing dates in the data selection.")
+    st.subheader("💡 Business Pulse Insights")
+    insights = []
+    if growth_pct > 0:
+        insights.append(f"🟢 **Upward Trend:** Revenue increased by **{growth_pct:.1f}%** in the latest active month compared to the previous period.")
+    else:
+        insights.append(f"🟡 **Sales Adjustments:** Revenue changed by **{growth_pct:.1f}%** in the latest active month. Consider reviewing seasonal buying cycles.")
 
-st.markdown("---")
+    if aov > 400:
+        insights.append(f"⭐ **Strong Transaction Values:** The Average Order Value of **${aov:,.2f}** indicates high bulk orders or larger catalog buys.")
+    else:
+        insights.append(f"📦 **Transaction Frequency:** The average cart checkout size is **${aov:,.2f}**. Cross-selling strategies could raise the individual basket value.")
 
-# 6. Insights
-st.subheader("💡 Business Pulse Insights")
-insights = []
-if growth_pct > 0:
-    insights.append(f"🟢 **Upward Trend:** Revenue increased by **{growth_pct:.1f}%** in the latest active month compared to the previous period.")
-else:
-    insights.append(f"🟡 **Sales Adjustments:** Revenue changed by **{growth_pct:.1f}%** in the latest active month. Consider reviewing seasonal buying cycles.")
-
-if aov > 400:
-    insights.append(f"⭐ **Strong Transaction Values:** The Average Order Value of **${aov:,.2f}** indicates high bulk orders or larger catalog buys.")
-else:
-    insights.append(f"📦 **Transaction Frequency:** The average cart checkout size is **${aov:,.2f}**. Cross-selling strategies could raise the individual basket value.")
-
-for insight in insights:
-    st.info(insight)
+    for insight in insights:
+        st.info(insight)
