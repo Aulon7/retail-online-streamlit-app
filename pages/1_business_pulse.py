@@ -1,23 +1,47 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
 
 # Import ONLY the core data loading function from P2's backend
-from src.data_loader import load_sales
-
-# Import the analytical and chart functions from P2's backend
-from src.analysis import (
-    total_revenue,
-    total_orders,
-    average_order_value,
-    unique_customers,
-    monthly_revenue
-)
-from src.charts import revenue_trend_chart
+try:
+    from src.data_loader import load_sales
+except ImportError:
+    # Direct fallback if data loader is completely missing
+    def load_sales():
+        return pd.read_parquet("data/retail_clean.parquet")
 
 # ------------------------------------------------------------
-# LOCAL FILTERING FUNCTIONS 
-# (Kept here to ensure page works independently of P2's backend)
+# LOCAL METRICS & FILTERING FUNCTIONS 
+# (Kept here to ensure page works independently of P2's backend files)
 # ------------------------------------------------------------
+def normalize_columns_local(df):
+    rename_map = {
+        "Customer ID": "CustomerID",
+        "Customer_ID": "CustomerID",
+        "customer_id": "CustomerID",
+        "CustomerNo": "CustomerID",
+        "Customer No": "CustomerID",
+        "Invoice No": "InvoiceNo",
+        "Invoice_No": "InvoiceNo",
+        "invoice_no": "InvoiceNo",
+        "InvoiceNumber": "InvoiceNo",
+        "Invoice Number": "InvoiceNo",
+        "Invoice": "InvoiceNo",
+        "invoice": "InvoiceNo",
+        "Unit Price": "UnitPrice",
+        "Unit_Price": "UnitPrice",
+        "unit_price": "UnitPrice",
+        "Price": "UnitPrice",
+        "price": "UnitPrice",
+        "Rate": "UnitPrice",
+        "Invoice Date": "InvoiceDate",
+        "Invoice_Date": "InvoiceDate",
+        "invoice_date": "InvoiceDate",
+        "Date": "InvoiceDate",
+        "date": "InvoiceDate",
+    }
+    return df.rename(columns=rename_map)
+
 def filter_period_local(df, start_date, end_date):
     if "InvoiceDate" in df.columns:
         start = pd.to_datetime(start_date)
@@ -36,11 +60,18 @@ def filter_country_local(df, country):
 st.title("📈 Business Pulse Dashboard")
 st.markdown("Track overall sales performance, monthly trends, and high-level health indicators using real dataset analysis.")
 
-# 1. Load Real Data (Cached for speed)
+# 1. Load and Clean Dataset
 try:
-    df_sales = load_sales()
+    df_raw = load_sales()
+    df_sales = normalize_columns_local(df_raw)
+    
+    if "InvoiceDate" in df_sales.columns:
+        df_sales["InvoiceDate"] = pd.to_datetime(df_sales["InvoiceDate"])
+        
+    if "Revenue" not in df_sales.columns and "Quantity" in df_sales.columns and "UnitPrice" in df_sales.columns:
+        df_sales["Revenue"] = df_sales["Quantity"] * df_sales["UnitPrice"]
 except Exception as e:
-    st.error(f"Error loading the dataset from P2's backend: {e}")
+    st.error(f"Error loading or preparing the dataset: {e}")
     st.stop()
 
 # 2. Sidebar Filters
@@ -73,16 +104,18 @@ if df_filtered.empty:
     st.warning("No transactions found for the selected filter criteria.")
     st.stop()
 
-# 3. Calculate Metrics using P2's backend
-try:
-    rev = total_revenue(df_filtered)
-    orders = total_orders(df_filtered)
-    aov = average_order_value(df_filtered)
-    customers = unique_customers(df_filtered)
-    df_monthly = monthly_revenue(df_filtered)
-except Exception as e:
-    st.error(f"Error calculating analysis metrics from P2's backend: {e}")
-    st.stop()
+# 3. Calculate metrics locally
+rev = float(df_filtered["Revenue"].sum()) if "Revenue" in df_filtered.columns else 0.0
+orders = int(df_filtered["InvoiceNo"].nunique()) if "InvoiceNo" in df_filtered.columns else 0
+aov = float(rev / orders) if orders > 0 else 0.0
+customers = int(df_filtered["CustomerID"].dropna().nunique()) if "CustomerID" in df_filtered.columns else 0
+
+# Calculate monthly trend
+df_monthly = pd.DataFrame(columns=["YearMonth", "Revenue"])
+if "InvoiceDate" in df_filtered.columns and "Revenue" in df_filtered.columns:
+    df_temp = df_filtered.copy()
+    df_temp["YearMonth"] = df_temp["InvoiceDate"].dt.to_period("M").astype(str)
+    df_monthly = df_temp.groupby("YearMonth")["Revenue"].sum().reset_index().sort_values("YearMonth")
 
 growth_pct = 0.0
 if len(df_monthly) >= 2:
@@ -110,11 +143,24 @@ st.markdown("---")
 
 # 5. Monthly Trend Chart
 st.subheader("Monthly Revenue Trend")
-try:
-    fig = revenue_trend_chart(df_filtered)
+if not df_monthly.empty:
+    fig = px.line(
+        df_monthly,
+        x="YearMonth",
+        y="Revenue",
+        title=f"Monthly Sales Performance ({selected_country})",
+        labels={"YearMonth": "Month", "Revenue": "Revenue ($)"},
+        markers=True
+    )
+    fig.update_traces(line_color="#29B5E8", line_width=3)
+    fig.update_layout(
+        hovermode="x unified",
+        template="plotly_white",
+        margin=dict(l=10, r=10, t=10, b=10)
+    )
     st.plotly_chart(fig, use_container_width=True)
-except Exception as e:
-    st.error(f"Error rendering chart from P2's backend: {e}")
+else:
+    st.warning("Trend visualization unavailable due to missing dates in the data selection.")
 
 st.markdown("---")
 
