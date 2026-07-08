@@ -104,4 +104,32 @@ with col2:
 with col3:
     st.metric(label="Average Order Value (AOV)", value=f"${aov:,.2f}")
 with col4:
-    st.metric(label="Active Cus
+    st.metric(label="Active Customers", value=f"{customers:,}")
+
+st.markdown("---")
+
+# 5. Monthly Trend Chart
+st.subheader("Monthly Revenue Trend")
+try:
+    fig = revenue_trend_chart(df_filtered)
+    st.plotly_chart(fig, use_container_width=True)
+except Exception as e:
+    st.error(f"Error rendering chart from P2's backend: {e}")
+
+st.markdown("---")
+
+# 6. Insights
+st.subheader("💡 Business Pulse Insights")
+insights = []
+if growth_pct > 0:
+    insights.append(f"🟢 **Upward Trend:** Revenue increased by **{growth_pct:.1f}%** in the latest active month compared to the previous period.")
+else:
+    insights.append(f"🟡 **Sales Adjustments:** Revenue changed by **{growth_pct:.1f}%** in the latest active month. Consider reviewing seasonal buying cycles.")
+
+if aov > 400:
+    insights.append(f"⭐ **Strong Transaction Values:** The Average Order Value of **${aov:,.2f}** indicates high bulk orders or larger catalog buys.")
+else:
+    insights.append(f"📦 **Transaction Frequency:** The average cart checkout size is **${aov:,.2f}**. Cross-selling strategies could raise the individual basket value.")
+
+for insight in insights:
+    st.info(insight)
