@@ -48,9 +48,11 @@ def validate_schema(uploaded_file):
     except pa.errors.SchemaError as e:
         return False, f"Schema validation failed: {e}"
 
-# Initialize Session State to remember if a valid file was uploaded
+# Initialize Session State to remember if a valid file was uploaded.
+# The flag is mirrored in the URL (?validated=1) because a browser refresh
+# wipes session state — the URL is what lets a refresh skip the upload gate.
 if "validated" not in st.session_state:
-    st.session_state["validated"] = False
+    st.session_state["validated"] = st.query_params.get("validated") == "1"
 
 # If a valid file has not been uploaded yet, prompt the user to upload it
 if st.session_state["validated"] is False:
@@ -71,23 +73,29 @@ if st.session_state["validated"] is False:
 
             if is_valid:
                 st.session_state["validated"] = True
+                st.query_params["validated"] = "1"
                 st.rerun()
             else:
                 st.error(f"{message}")
 
 # If validation passed, show dashboard navigation
 else:
-    # Navigation
+    # Navigation — the chosen slide is also kept in the URL (?slide=...) so a
+    # browser refresh reopens the same slide instead of the first one.
+    slides = [
+        "Business Pulse Dashboard",
+        "Revenue Drivers Dashboard",
+        "Risk & Customer Value Dashboard",
+    ]
     st.sidebar.title("Slides")
+    requested_slide = st.query_params.get("slide")
     slide = st.sidebar.radio(
         "Slides",
-        [
-            "Business Pulse Dashboard",
-            "Revenue Drivers Dashboard",
-            "Risk & Customer Value Dashboard",
-        ],
+        slides,
+        index=slides.index(requested_slide) if requested_slide in slides else 0,
         label_visibility="collapsed",
     )
+    st.query_params["slide"] = slide
 
     if slide == "Business Pulse Dashboard":
         business_pulse.render()
