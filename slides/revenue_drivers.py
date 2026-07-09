@@ -9,33 +9,37 @@ except ImportError:
         return pd.read_parquet("data/retail_clean.parquet")
 
 
+DOMESTIC_MARKET = "United Kingdom"
+
+RENAME_MAP = {
+    "Customer ID": "CustomerID",
+    "Customer_ID": "CustomerID",
+    "customer_id": "CustomerID",
+    "CustomerNo": "CustomerID",
+    "Customer No": "CustomerID",
+    "Invoice No": "InvoiceNo",
+    "Invoice_No": "InvoiceNo",
+    "invoice_no": "InvoiceNo",
+    "InvoiceNumber": "InvoiceNo",
+    "Invoice Number": "InvoiceNo",
+    "Invoice": "InvoiceNo",
+    "invoice": "InvoiceNo",
+    "Unit Price": "UnitPrice",
+    "Unit_Price": "UnitPrice",
+    "unit_price": "UnitPrice",
+    "Price": "UnitPrice",
+    "price": "UnitPrice",
+    "Rate": "UnitPrice",
+    "Invoice Date": "InvoiceDate",
+    "Invoice_Date": "InvoiceDate",
+    "invoice_date": "InvoiceDate",
+    "Date": "InvoiceDate",
+    "date": "InvoiceDate",
+}
+
+
 def normalize_columns_local(df):
-    rename_map = {
-        "Customer ID": "CustomerID",
-        "Customer_ID": "CustomerID",
-        "customer_id": "CustomerID",
-        "CustomerNo": "CustomerID",
-        "Customer No": "CustomerID",
-        "Invoice No": "InvoiceNo",
-        "Invoice_No": "InvoiceNo",
-        "invoice_no": "InvoiceNo",
-        "InvoiceNumber": "InvoiceNo",
-        "Invoice Number": "InvoiceNo",
-        "Invoice": "InvoiceNo",
-        "invoice": "InvoiceNo",
-        "Unit Price": "UnitPrice",
-        "Unit_Price": "UnitPrice",
-        "unit_price": "UnitPrice",
-        "Price": "UnitPrice",
-        "price": "UnitPrice",
-        "Rate": "UnitPrice",
-        "Invoice Date": "InvoiceDate",
-        "Invoice_Date": "InvoiceDate",
-        "invoice_date": "InvoiceDate",
-        "Date": "InvoiceDate",
-        "date": "InvoiceDate",
-    }
-    return df.rename(columns=rename_map)
+    return df.rename(columns=RENAME_MAP)
 
 
 def filter_country_local(df, country):
@@ -51,6 +55,8 @@ def render():
     try:
         df_raw = load_sales()
         df_sales = normalize_columns_local(df_raw)
+        if "Country" in df_sales.columns:
+            df_sales["Country"] = df_sales["Country"].astype(str).str.strip()
         if "Revenue" not in df_sales.columns and "Quantity" in df_sales.columns and "UnitPrice" in df_sales.columns:
             df_sales["Revenue"] = df_sales["Quantity"] * df_sales["UnitPrice"]
     except Exception as e:
@@ -91,7 +97,7 @@ def render():
             st.warning("No product data available.")
 
     with col2:
-        df_international = df_country_sales[df_country_sales["Country"] != "United Kingdom"].head(10) if not df_country_sales.empty else pd.DataFrame()
+        df_international = df_country_sales[df_country_sales["Country"] != DOMESTIC_MARKET].head(10) if not df_country_sales.empty else pd.DataFrame()
         if not df_international.empty:
             fig_country = px.bar(
                 df_international,
@@ -109,7 +115,7 @@ def render():
 
     st.subheader("💡 Market Expansion Recommendations")
     if not df_country_sales.empty:
-        top_countries_list = df_country_sales[df_country_sales["Country"] != "United Kingdom"].head(3)
+        top_countries_list = df_country_sales[df_country_sales["Country"] != DOMESTIC_MARKET].head(3)
         if not top_countries_list.empty:
             top_1 = top_countries_list.iloc[0]["Country"]
             st.success(
